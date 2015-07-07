@@ -1,403 +1,400 @@
 define([
-    "jquery",
-    "underscore",
-    "utils",
-    "storage",
-    "eventMgr",
-    "fileSystem",
-    "fileMgr",
-    "classes/Provider",
-    "providers/dropboxProvider",
-    "providers/gdriveProvider",
-    "providers/gdrivesecProvider",
-    "providers/gdriveterProvider"
+	"jquery",
+	"underscore",
+	"utils",
+	"storage",
+	"eventMgr",
+	"fileSystem",
+	"fileMgr",
+	"classes/Provider",
+	"providers/dropboxProvider",
+	"providers/couchdbProvider",
+	"providers/gdriveProvider",
+	"providers/gdrivesecProvider",
+	"providers/gdriveterProvider"
 ], function($, _, utils, storage, eventMgr, fileSystem, fileMgr, Provider) {
 
-    var synchronizer = {};
+	var synchronizer = {};
 
-    // Create a map with providerId: providerModule
-    var providerMap = _.chain(arguments).map(function(argument) {
-        return argument instanceof Provider && [
-            argument.providerId,
-            argument
-        ];
-    }).compact().object().value();
+	// Create a map with providerId: providerModule
+	var providerMap = _.chain(arguments).map(function(argument) {
+		return argument instanceof Provider && [
+			argument.providerId,
+			argument
+		];
+	}).compact().object().value();
 
-    // Retrieve sync locations from storage
-    _.each(fileSystem, function(fileDesc) {
-        _.each(utils.retrieveIndexArray(fileDesc.fileIndex + ".sync"), function(syncIndex) {
-            try {
-                var syncAttributes = JSON.parse(storage[syncIndex]);
-                // Store syncIndex
-                syncAttributes.syncIndex = syncIndex;
-                // Replace provider ID by provider module in attributes
-                var provider = providerMap[syncAttributes.provider];
-                if(!provider) {
-                    throw new Error("Invalid provider ID: " + syncAttributes.provider);
-                }
-                syncAttributes.provider = provider;
-                fileDesc.syncLocations[syncIndex] = syncAttributes;
-            }
-            catch(e) {
-                // storage can be corrupted
-                eventMgr.onError(e);
-                // Remove sync location
-                utils.removeIndexFromArray(fileDesc.fileIndex + ".sync", syncIndex);
-                storage.removeItem(syncIndex);
-            }
-        });
-    });
-    
-    // AutoSync configuration
-    _.each(providerMap, function(provider) {
-        provider.autosyncConfig = utils.retrieveIgnoreError(provider.providerId + ".autosyncConfig") || {};
-    });
-    
-    // Returns true if at least one file has synchronized location
-    synchronizer.hasSync = function(provider) {
-        return _.some(fileSystem, function(fileDesc) {
-            return _.some(fileDesc.syncLocations, function(syncAttributes) {
-                return provider === undefined || syncAttributes.provider === provider;
-            });
-        });
-    };
+	// Retrieve sync locations from storage
+	(function() {
+		var syncIndexMap = {};
+		_.each(fileSystem, function(fileDesc) {
+			utils.retrieveIndexArray(fileDesc.fileIndex + ".sync").forEach(function(syncIndex) {
+				try {
+					var syncAttributes = JSON.parse(storage[syncIndex]);
+					// Store syncIndex
+					syncAttributes.syncIndex = syncIndex;
+					// Replace provider ID by provider module in attributes
+					var provider = providerMap[syncAttributes.provider];
+					if(!provider) {
+						throw new Error("Invalid provider ID: " + syncAttributes.provider);
+					}
+					syncAttributes.provider = provider;
+					fileDesc.syncLocations[syncIndex] = syncAttributes;
+					syncIndexMap[syncIndex] = syncAttributes;
+				}
+				catch(e) {
+					// storage can be corrupted
+					eventMgr.onError(e);
+					// Remove sync location
+					utils.removeIndexFromArray(fileDesc.fileIndex + ".sync", syncIndex);
+				}
+			});
+		});
 
-    /***************************************************************************
-     * Standard synchronization
-     **************************************************************************/
+		// Clean fields from deleted files in local storage
+		Object.keys(storage).forEach(function(key) {
+			var match = key.match(/sync\.\S+/);
+			if(match && !syncIndexMap.hasOwnProperty(match[0])) {
+				storage.removeItem(key);
+			}
+		});
+	})();
 
-    // Recursive function to upload a single file on multiple locations
-    var uploadSyncAttributesList = [];
-    var uploadContent;
-    var uploadContentCRC;
-    var uploadTitle;
-    var uploadTitleCRC;
-    function locationUp(callback) {
+	// AutoSync configuration
+	_.each(providerMap, function(provider) {
+		provider.autosyncConfig = utils.retrieveIgnoreError(provider.providerId + ".autosyncConfig") || {};
+	});
 
-        // No more synchronized location for this document
-        if(uploadSyncAttributesList.length === 0) {
-            fileUp(callback);
-            return;
-        }
+	// Returns true if at least one file has synchronized location
+	synchronizer.hasSync = function(provider) {
+		return _.some(fileSystem, function(fileDesc) {
+			return _.some(fileDesc.syncLocations, function(syncAttributes) {
+				return provider === undefined || syncAttributes.provider === provider;
+			});
+		});
+	};
 
-        // Dequeue a synchronized location
-        var syncAttributes = uploadSyncAttributesList.pop();
+	/***************************************************************************
+	 * Synchronization
+	 **************************************************************************/
 
-        var providerSyncUpFunction = syncAttributes.provider.syncUp;
-        // Call a special function in case of a real time synchronized location
-        if(syncAttributes.isRealtime === true) {
-            providerSyncUpFunction = syncAttributes.provider.syncUpRealtime;
-        }
+	// Entry point for up synchronization (upload changes)
+	var uploadCycle = false;
 
-        // Use the specified provider to perform the upload
-        providerSyncUpFunction(uploadContent, uploadContentCRC, uploadTitle, uploadTitleCRC, syncAttributes, function(error, uploadFlag) {
-            if(uploadFlag === true) {
-                // If uploadFlag is true, request another upload cycle
-                uploadCycle = true;
-            }
-            if(error) {
-                callback(error);
-                return;
-            }
-            if(uploadFlag) {
-                // Update syncAttributes in storage
-                utils.storeAttributes(syncAttributes);
-            }
-            locationUp(callback);
-        });
-    }
+	function syncUp(callback) {
+		var uploadFileList = [];
 
-    // Recursive function to upload multiple files
-    var uploadFileList = [];
-    function fileUp(callback) {
+		// Recursive function to upload multiple files
+		function fileUp() {
+			// No more fileDesc to synchronize
+			if(uploadFileList.length === 0) {
+				return syncUp(callback);
+			}
 
-        // No more fileDesc to synchronize
-        if(uploadFileList.length === 0) {
-            syncUp(callback);
-            return;
-        }
+			// Dequeue a fileDesc to synchronize
+			var fileDesc = uploadFileList.pop();
+			var uploadSyncAttributesList = _.values(fileDesc.syncLocations);
+			if(uploadSyncAttributesList.length === 0) {
+				return fileUp();
+			}
 
-        // Dequeue a fileDesc to synchronize
-        var fileDesc = uploadFileList.pop();
-        uploadSyncAttributesList = _.values(fileDesc.syncLocations);
-        if(uploadSyncAttributesList.length === 0) {
-            fileUp(callback);
-            return;
-        }
+			// Here we are freezing the data to make sure it's uploaded consistently
+			var uploadContent = fileDesc.content;
+			var uploadContentCRC = utils.crc32(uploadContent);
+			var uploadTitle = fileDesc.title;
+			var uploadTitleCRC = utils.crc32(uploadTitle);
+			var uploadDiscussionList = fileDesc.discussionListJSON;
+			var uploadDiscussionListCRC = utils.crc32(uploadDiscussionList);
+			var uploadFrontMatter = fileDesc.frontMatter;
 
-        // Get document title/content
-        uploadContent = fileDesc.content;
-        uploadContentCRC = utils.crc32(uploadContent);
-        uploadTitle = fileDesc.title;
-        uploadTitleCRC = utils.crc32(uploadTitle);
-        locationUp(callback);
-    }
+			// Recursive function to upload a single file on multiple locations
+			function locationUp() {
 
-    // Entry point for up synchronization (upload changes)
-    var uploadCycle = false;
-    function syncUp(callback) {
-        if(uploadCycle === true) {
-            // New upload cycle
-            uploadCycle = false;
-            uploadFileList = _.values(fileSystem);
-            fileUp(callback);
-        }
-        else {
-            callback();
-        }
-    }
+				// No more synchronized location for this document
+				if(uploadSyncAttributesList.length === 0) {
+					return fileUp();
+				}
 
-    // Recursive function to download changes from multiple providers
-    var providerList = [];
-    function providerDown(callback) {
-        if(providerList.length === 0) {
-            callback();
-            return;
-        }
-        var provider = providerList.pop();
+				// Dequeue a synchronized location
+				var syncAttributes = uploadSyncAttributesList.pop();
 
-        // Check that provider has files to sync
-        if(!synchronizer.hasSync(provider)) {
-            providerDown(callback);
-            return;
-        }
+				syncAttributes.provider.syncUp(
+					uploadContent,
+					uploadContentCRC,
+					uploadTitle,
+					uploadTitleCRC,
+					uploadDiscussionList,
+					uploadDiscussionListCRC,
+					uploadFrontMatter,
+					syncAttributes,
+					function(error, uploadFlag) {
+						if(uploadFlag === true) {
+							// If uploadFlag is true, request another upload cycle
+							uploadCycle = true;
+						}
+						if(error) {
+							return callback(error);
+						}
+						if(uploadFlag) {
+							// Update syncAttributes in storage
+							utils.storeAttributes(syncAttributes);
+						}
+						locationUp();
+					}
+				);
+			}
 
-        // Perform provider's syncDown
-        provider.syncDown(function(error) {
-            if(error) {
-                callback(error);
-                return;
-            }
-            providerDown(callback);
-        });
-    }
+			locationUp();
+		}
 
-    // Entry point for down synchronization (download changes)
-    function syncDown(callback) {
-        providerList = _.values(providerMap);
-        providerDown(callback);
-    }
+		if(uploadCycle === true) {
+			// New upload cycle
+			uploadCycle = false;
+			uploadFileList = _.values(fileSystem);
+			fileUp();
+		}
+		else {
+			callback();
+		}
+	}
 
-    // Listen to offline status changes
-    var isOffline = false;
-    eventMgr.addListener("onOfflineChanged", function(isOfflineParam) {
-        isOffline = isOfflineParam;
-    });
+	// Entry point for down synchronization (download changes)
+	function syncDown(callback) {
+		var providerList = _.values(providerMap);
 
-    // Main entry point for synchronization
-    var syncRunning = false;
-    synchronizer.sync = function() {
-        // If sync is already running or offline
-        if(syncRunning === true || isOffline === true) {
-            return false;
-        }
-        syncRunning = true;
-        eventMgr.onSyncRunning(true);
-        uploadCycle = true;
+		// Recursive function to download changes from multiple providers
+		function providerDown() {
+			if(providerList.length === 0) {
+				return callback();
+			}
+			var provider = providerList.pop();
 
-        function isError(error) {
-            if(error !== undefined) {
-                syncRunning = false;
-                eventMgr.onSyncRunning(false);
-                return true;
-            }
-            return false;
-        }
+			// Check that provider has files to sync
+			if(!synchronizer.hasSync(provider)) {
+				return providerDown();
+			}
 
-        syncDown(function(error) {
-            if(isError(error)) {
-                return;
-            }
-            syncUp(function(error) {
-                if(isError(error)) {
-                    return;
-                }
-                syncRunning = false;
-                eventMgr.onSyncRunning(false);
-                eventMgr.onSyncSuccess();
-            });
-        });
-        return true;
-    };
+			// Perform provider's syncDown
+			provider.syncDown(function(error) {
+				if(error) {
+					return callback(error);
+				}
+				providerDown();
+			});
+		}
 
-    /***************************************************************************
-     * Realtime synchronization
-     **************************************************************************/
+		providerDown();
+	}
 
-    var realtimeFileDesc;
-    var realtimeSyncAttributes;
-    var isOnline = true;
+	// Entry point for the autosync feature
+	function autosyncAll(callback) {
+		var autosyncFileList = _.filter(fileSystem, function(fileDesc) {
+			return _.size(fileDesc.syncLocations) === 0;
+		});
 
-    // Determines if open file has real time sync location and tries to start
-    // real time sync
-    function onFileOpen(fileDesc) {
-        realtimeFileDesc = _.some(fileDesc.syncLocations, function(syncAttributes) {
-            realtimeSyncAttributes = syncAttributes;
-            return syncAttributes.isRealtime;
-        }) ? fileDesc : undefined;
-        tryStartRealtimeSync();
-    }
+		// Recursive function to autosync multiple files
+		function fileAutosync() {
+			// No more fileDesc to synchronize
+			if(autosyncFileList.length === 0) {
+				return callback();
+			}
+			var fileDesc = autosyncFileList.pop();
 
-    // Tries to start/stop real time sync on online/offline event
-    function onOfflineChanged(isOfflineParam) {
-        if(isOfflineParam === false) {
-            isOnline = true;
-            tryStartRealtimeSync();
-        }
-        else {
-            synchronizer.tryStopRealtimeSync();
-            isOnline = false;
-        }
-    }
+			var providerList = _.filter(providerMap, function(provider) {
+				return provider.autosyncConfig.mode == 'all';
+			});
 
-    // Starts real time synchronization if:
-    // 1. current file has real time sync location
-    // 2. we are online
-    function tryStartRealtimeSync() {
-        if(realtimeFileDesc !== undefined && isOnline === true) {
-            realtimeSyncAttributes.provider.startRealtimeSync(realtimeFileDesc, realtimeSyncAttributes);
-        }
-    }
+			function providerAutosync() {
+				// No more provider
+				if(providerList.length === 0) {
+					return fileAutosync();
+				}
+				var provider = providerList.pop();
 
-    // Stops previously started synchronization if any
-    synchronizer.tryStopRealtimeSync = function() {
-        if(realtimeFileDesc !== undefined && isOnline === true) {
-            realtimeSyncAttributes.provider.stopRealtimeSync();
-        }
-    };
+				provider.autosyncFile(fileDesc.title, fileDesc.content, fileDesc.discussionListJSON, provider.autosyncConfig, function(error, syncAttributes) {
+					if(error) {
+						return callback(error);
+					}
+					fileDesc.addSyncLocation(syncAttributes);
+					eventMgr.onSyncExportSuccess(fileDesc, syncAttributes);
+					providerAutosync();
+				});
+			}
 
-    // Triggers realtime synchronization from eventMgr events
-    if(window.viewerMode === false) {
-        eventMgr.addListener("onFileOpen", onFileOpen);
-        eventMgr.addListener("onFileClosed", synchronizer.tryStopRealtimeSync);
-        eventMgr.addListener("onOfflineChanged", onOfflineChanged);
-    }
+			providerAutosync();
+		}
 
-    /***************************************************************************
-     * Initialize module
-     **************************************************************************/
+		fileAutosync();
+	}
 
-    // Initialize the export dialog
-    function initExportDialog(provider) {
+	// Listen to offline status changes
+	var isOffline = false;
+	eventMgr.addListener("onOfflineChanged", function(isOfflineParam) {
+		isOffline = isOfflineParam;
+	});
 
-        // Reset fields
-        utils.resetModalInputs();
+	// Main entry point for synchronization
+	var syncRunning = false;
+	synchronizer.sync = function() {
+		// If sync is already running or offline
+		if(syncRunning === true || isOffline === true) {
+			return false;
+		}
+		syncRunning = true;
+		eventMgr.onSyncRunning(true);
+		uploadCycle = true;
 
-        // Load preferences
-        var exportPreferences = utils.retrieveIgnoreError(provider.providerId + ".exportPreferences");
-        if(exportPreferences) {
-            _.each(provider.exportPreferencesInputIds, function(inputId) {
-                var exportPreferenceValue = exportPreferences[inputId];
-                if(_.isBoolean(exportPreferenceValue)) {
-                    utils.setInputChecked("#input-sync-export-" + inputId, exportPreferenceValue);
-                }
-                else {
-                    utils.setInputValue("#input-sync-export-" + inputId, exportPreferenceValue);
-                }
-            });
-        }
+		function isError(error) {
+			if(error !== undefined) {
+				syncRunning = false;
+				eventMgr.onSyncRunning(false);
+				return true;
+			}
+			return false;
+		}
 
-        // Open dialog
-        $(".modal-upload-" + provider.providerId).modal();
-    }
+		autosyncAll(function(error) {
+			if(isError(error)) {
+				return;
+			}
+			syncDown(function(error) {
+				if(isError(error)) {
+					return;
+				}
+				syncUp(function(error) {
+					if(isError(error)) {
+						return;
+					}
+					syncRunning = false;
+					eventMgr.onSyncRunning(false);
+					eventMgr.onSyncSuccess();
+				});
+			});
+		});
+		return true;
+	};
 
-    eventMgr.addListener("onFileCreated", function(fileDesc) {
-        if(_.size(fileDesc.syncLocations) === 0) {
-            _.each(providerMap, function(provider) {
-                provider.autosyncConfig.enabled && provider.autosyncFile(fileDesc.title, fileDesc.content, provider.autosyncConfig, function(error, syncAttributes) {
-                    if(error) {
-                        return;
-                    }
-                    fileDesc.addSyncLocation(syncAttributes);
-                    eventMgr.onSyncExportSuccess(fileDesc, syncAttributes);
-                });
-            });
-        }
-    });
+	/***************************************************************************
+	 * Initialize module
+	 **************************************************************************/
 
-    eventMgr.addListener("onReady", function() {
-        // Init each provider
-        _.each(providerMap, function(provider) {
-            // Provider's import button
-            $(".action-sync-import-" + provider.providerId).click(function(event) {
-                provider.importFiles(event);
-            });
-            // Provider's export action
-            $(".action-sync-export-dialog-" + provider.providerId).click(function() {
-                initExportDialog(provider);
-            });
-            // Provider's autosync action
-            $(".action-autosync-dialog-" + provider.providerId).click(function() {
-                // Reset fields
-                utils.resetModalInputs();
-                // Load config
-                provider.setAutosyncDialogConfig(provider);
-                // Open dialog
-                $(".modal-autosync-" + provider.providerId).modal();
-            });
-            $(".action-sync-export-" + provider.providerId).click(function(event) {
-                var isRealtime = utils.getInputChecked("#input-sync-export-" + provider.providerId + "-realtime");
-                var fileDesc = fileMgr.currentFile;
+	function loadPreferences(provider, action) {
+		utils.resetModalInputs();
+		var preferences = utils.retrieveIgnoreError(provider.providerId + '.' + action + 'Preferences');
+		if(preferences) {
+			_.each(provider[action + 'PreferencesInputIds'], function(inputId) {
+				var exportPreferenceValue = preferences[inputId];
+				var setValue = utils.setInputValue;
+				if(_.isBoolean(exportPreferenceValue)) {
+					setValue = utils.setInputChecked;
+				}
+				setValue('#input-sync-' + action + '-' + inputId, exportPreferenceValue);
+			});
+		}
+	}
 
-                if(isRealtime) {
-                    if(_.size(fileDesc.syncLocations) > 0) {
-                        eventMgr.onError("Real time collaborative document can't be synchronized with multiple locations");
-                        return;
-                    }
-                    // Perform the provider's real time export
-                    provider.exportRealtimeFile(event, fileDesc.title, fileDesc.content, function(error, syncAttributes) {
-                        if(error) {
-                            return;
-                        }
-                        syncAttributes.isRealtime = true;
-                        fileDesc.addSyncLocation(syncAttributes);
-                        eventMgr.onSyncExportSuccess(fileDesc, syncAttributes);
+	// Initialize the import dialog
+	function initImportDialog(provider) {
+		loadPreferences(provider, 'import');
+		$(".modal-download-" + provider.providerId).modal();
+	}
 
-                        // Start the real time sync
-                        realtimeFileDesc = fileDesc;
-                        realtimeSyncAttributes = syncAttributes;
-                        tryStartRealtimeSync();
-                    });
-                }
-                else {
-                    if(_.size(fileDesc.syncLocations) > 0 && _.first(_.values(fileDesc.syncLocations)).isRealtime) {
-                        eventMgr.onError("Real time collaborative document can't be synchronized with multiple locations");
-                        return;
-                    }
-                    // Perform the provider's standard export
-                    provider.exportFile(event, fileDesc.title, fileDesc.content, function(error, syncAttributes) {
-                        if(error) {
-                            return;
-                        }
-                        fileDesc.addSyncLocation(syncAttributes);
-                        eventMgr.onSyncExportSuccess(fileDesc, syncAttributes);
-                    });
-                }
+	// Initialize the export dialog
+	function initExportDialog(provider) {
+		loadPreferences(provider, 'export');
+		$(".modal-upload-" + provider.providerId).modal();
+	}
 
-                // Store input values as preferences for next time we open the
-                // export dialog
-                var exportPreferences = {};
-                _.each(provider.exportPreferencesInputIds, function(inputId) {
-                    var inputElt = document.getElementById("input-sync-export-" + inputId);
-                    if(inputElt.type == 'checkbox') {
-                        exportPreferences[inputId] = inputElt.checked;
-                    }
-                    else {
-                        exportPreferences[inputId] = inputElt.value;
-                    }
-                });
-                storage[provider.providerId + ".exportPreferences"] = JSON.stringify(exportPreferences);
-            });
-            $(".action-autosync-" + provider.providerId).click(function(event) {
-                var config = provider.getAutosyncDialogConfig(event);
-                if(config !== undefined) {
-                    storage[provider.providerId + ".autosyncConfig"] = JSON.stringify(config);
-                    provider.autosyncConfig = config;
-                }
-            });
-        });
-    });
+	eventMgr.addListener("onFileCreated", function(fileDesc) {
+		if(_.size(fileDesc.syncLocations) === 0) {
+			_.each(providerMap, function(provider) {
+				if(provider.autosyncConfig.mode != 'new') {
+					return;
+				}
+				provider.autosyncFile(fileDesc.title, fileDesc.content, fileDesc.discussionListJSON, provider.autosyncConfig, function(error, syncAttributes) {
+					if(error) {
+						return;
+					}
+					fileDesc.addSyncLocation(syncAttributes);
+					eventMgr.onSyncExportSuccess(fileDesc, syncAttributes);
+				});
+			});
+		}
+	});
 
-    eventMgr.onSynchronizerCreated(synchronizer);
-    return synchronizer;
+	eventMgr.addListener("onReady", function() {
+		// Init each provider
+		_.each(providerMap, function(provider) {
+			// Provider's import button
+			$(".action-sync-import-" + provider.providerId).click(function(event) {
+				provider.importFiles(event);
+
+				// Store input values as preferences for next time we open the
+				// import dialog
+				var importPreferences = {};
+				_.each(provider.importPreferencesInputIds, function(inputId) {
+					var inputElt = document.getElementById("input-sync-import-" + inputId);
+					if(inputElt.type == 'checkbox') {
+						importPreferences[inputId] = inputElt.checked;
+					}
+					else {
+						importPreferences[inputId] = inputElt.value;
+					}
+				});
+				storage[provider.providerId + ".importPreferences"] = JSON.stringify(importPreferences);
+			});
+			// Provider's import dialog action
+			$(".action-sync-import-dialog-" + provider.providerId).click(function() {
+				initImportDialog(provider);
+			});
+			// Provider's export dialog action
+			$(".action-sync-export-dialog-" + provider.providerId).click(function() {
+				initExportDialog(provider);
+			});
+			// Provider's autosync action
+			$(".action-autosync-dialog-" + provider.providerId).click(function() {
+				// Reset fields
+				utils.resetModalInputs();
+				// Load config
+				provider.setAutosyncDialogConfig(provider);
+				// Open dialog
+				$(".modal-autosync-" + provider.providerId).modal();
+			});
+			$(".action-sync-export-" + provider.providerId).click(function(event) {
+				var fileDesc = fileMgr.currentFile;
+
+				provider.exportFile(event, fileDesc.title, fileDesc.content, fileDesc.discussionListJSON, fileDesc.frontMatter, function(error, syncAttributes) {
+					if(error) {
+						return;
+					}
+					fileDesc.addSyncLocation(syncAttributes);
+					eventMgr.onSyncExportSuccess(fileDesc, syncAttributes);
+				});
+
+				// Store input values as preferences for next time we open the
+				// export dialog
+				var exportPreferences = {};
+				_.each(provider.exportPreferencesInputIds, function(inputId) {
+					var inputElt = document.getElementById("input-sync-export-" + inputId);
+					if(inputElt.type == 'checkbox') {
+						exportPreferences[inputId] = inputElt.checked;
+					}
+					else {
+						exportPreferences[inputId] = inputElt.value;
+					}
+				});
+				storage[provider.providerId + ".exportPreferences"] = JSON.stringify(exportPreferences);
+			});
+			$(".action-autosync-" + provider.providerId).click(function(event) {
+				var config = provider.getAutosyncDialogConfig(event);
+				if(config !== undefined) {
+					storage[provider.providerId + ".autosyncConfig"] = JSON.stringify(config);
+					provider.autosyncConfig = config;
+				}
+			});
+		});
+	});
+
+	eventMgr.onSynchronizerCreated(synchronizer);
+	return synchronizer;
 });

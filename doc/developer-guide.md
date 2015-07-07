@@ -8,7 +8,7 @@ Getting started
 
 - [Git][1]
 - [node.js/npm][2]
-- [Grunt][3]
+- [Gulp][3]
 - [Bower][4]
 
 ### Before debugging
@@ -21,17 +21,14 @@ Getting started
 
 		bower install
 
-- Serve **StackEdit** at `http://localhost/`:
+- Serve **StackEdit** at `http://localhost/`: 
 
 		(export PORT=80 && node server.js)
-		
-	> **NOTE:** StackEdit project itself has no back end. It can run on any apache server.
+  If on Windows, use
+  
+  		(set PORT=80 && node server.js)
 
-- Run Chrome without application cache:
-
-		chrome --disable-application-cache
-
-- Run **StackEdit** in debug mode (serve original files instead of minified):
+- Run **StackEdit** in debug mode (no application cache, serve original files instead of minified):
 
 		http://localhost/?debug
 
@@ -45,11 +42,11 @@ Getting started
 
 - Add the new dependency to [RequireJS][8] configuration file (`main.js`):
 
-		grunt bower
+		gulp bower-requirejs
 
 ### Build/minify
 
-	grunt
+	gulp
 	
 ### Deploy
 
@@ -602,7 +599,7 @@ myExtension.onMessage = function(message) {
 
   [1]: http://git-scm.com/
   [2]: http://nodejs.org/
-  [3]: http://gruntjs.com/
+  [3]: http://gulpjs.com/
   [4]: http://bower.io/
   [5]: http://requirejs.org/ "RequireJS"
   [6]: http://en.wikipedia.org/wiki/Asynchronous_module_definition "Asynchronous module definition"

@@ -4,23 +4,37 @@
 		<div class="modal-header">
 			<button type="button" class="close" data-dismiss="modal"
 				aria-hidden="true">&times;</button>
-			<h3 class="modal-title">AutoSync to <%= providerName %></h3>
+			<h2 class="modal-title">AutoSync to <%= providerName %></h2>
 		</div>
 		<div class="modal-body">
 			<p>
-				<b>AutoSync</b> feature automatically exports every new document to your <i
+				<b>AutoSync</b> feature automatically saves all documents to your <i
 					class="icon-provider-<%= providerId %>"></i>
-				<code>Google Drive</code>
-				account and keep it synchronized.
+				<b>Google Drive</b>
+				account and keep them synchronized.
 			</p>
 			<div class="form-horizontal">
-			    <br/>
     			<div class="form-group">
     				<div class="col-lg-3 control-label"></div>
     				<div class="col-lg-8">
-    					<label> <input id="input-autosync-<%= providerId %>-enabled"
-    						type="checkbox"> Enable AutoSync for <%= providerName %>
-    					</label>
+						<div class="radio">
+							<label> <input type="radio"
+								name="radio-autosync-<%= providerId %>-mode" value="off">
+								Disabled
+							</label>
+						</div>
+						<div class="radio">
+							<label> <input type="radio"
+								name="radio-autosync-<%= providerId %>-mode" value="new">
+								New documents (not current)
+							</label>
+						</div>
+						<div class="radio">
+							<label> <input type="radio"
+								name="radio-autosync-<%= providerId %>-mode" value="all">
+								Every document not yet synchronized
+							</label>
+						</div>
     				</div>
     			</div>
 			    <br/>
@@ -44,8 +58,8 @@
     			</div>
     		</div>
 			<blockquote>
-				<b>NOTE:</b> Removing a local document will not delete the linked file on Google
-						Drive.
+				<p><b>Note:</b> Removing a local document will not delete the linked file on Google
+						Drive.</p>
 			</blockquote>
 		</div>
 		<div class="modal-footer">

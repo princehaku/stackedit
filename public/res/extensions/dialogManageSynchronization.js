@@ -1,74 +1,65 @@
 define([
-    "jquery",
-    "underscore",
-    "classes/Extension",
-    "text!html/dialogManageSynchronizationLocation.html",
+	"jquery",
+	"underscore",
+	"classes/Extension",
+	"text!html/dialogManageSynchronizationLocation.html",
 ], function($, _, Extension, dialogManageSynchronizationLocationHTML) {
 
-    var dialogManageSynchronization = new Extension("dialogManageSynchronization", 'Dialog "Manage synchronization"', false, true);
+	var dialogManageSynchronization = new Extension("dialogManageSynchronization", 'Dialog "Manage synchronization"', false, true);
 
-    var eventMgr;
-    dialogManageSynchronization.onEventMgrCreated = function(eventMgrParameter) {
-        eventMgr = eventMgrParameter;
-    };
-    
-    var synchronizer;
-    dialogManageSynchronization.onSynchronizerCreated = function(synchronizerParameter) {
-        synchronizer = synchronizerParameter;
-    };
+	var eventMgr;
+	dialogManageSynchronization.onEventMgrCreated = function(eventMgrParameter) {
+		eventMgr = eventMgrParameter;
+	};
 
-    var fileDesc;
-    var syncListElt;
-    var $msgSyncListElt;
-    var $msgNoSyncElt;
-    var refreshDialog = function(fileDescParameter) {
-        if(fileDescParameter !== undefined && fileDescParameter !== fileDesc) {
-            return;
-        }
+	var synchronizer;
+	dialogManageSynchronization.onSynchronizerCreated = function(synchronizerParameter) {
+		synchronizer = synchronizerParameter;
+	};
 
-        if(_.size(fileDesc.syncLocations) > 0) {
-            $msgSyncListElt.removeClass("hide");
-            $msgNoSyncElt.addClass("hide");
-        }
-        else {
-            $msgSyncListElt.addClass("hide");
-            $msgNoSyncElt.removeClass("hide");
-        }
-        
-        var syncListHtml = _.reduce(fileDesc.syncLocations, function(result, syncAttributes) {
-            return result + _.template(dialogManageSynchronizationLocationHTML, {
-                syncAttributes: syncAttributes,
-                syncDesc: syncAttributes.id || syncAttributes.path
-            });
-        }, '');
-        syncListElt.innerHTML = syncListHtml;
-        
-        _.each(syncListElt.querySelectorAll('.remove-button'), function(removeButtonElt) {
-            var $removeButtonElt = $(removeButtonElt);
-            var syncAttributes = fileDesc.syncLocations[$removeButtonElt.data('syncIndex')];
-            $removeButtonElt.click(function() {
-                synchronizer.tryStopRealtimeSync();
-                fileDesc.removeSyncLocation(syncAttributes);
-                eventMgr.onSyncRemoved(fileDesc, syncAttributes);
-            });
-        });
-    };
+	var fileDesc;
+	var syncListElt;
+	var $showAlreadySynchronizedElt;
+	var refreshDialog = function(fileDescParameter) {
+		if(fileDescParameter !== undefined && fileDescParameter !== fileDesc) {
+			return;
+		}
 
-    dialogManageSynchronization.onFileSelected = function(fileDescParameter) {
-        fileDesc = fileDescParameter;
-        refreshDialog(fileDescParameter);
-    };
+		$showAlreadySynchronizedElt.toggleClass("hide", _.size(fileDesc.syncLocations) === 0);
 
-    dialogManageSynchronization.onSyncExportSuccess = refreshDialog;
-    dialogManageSynchronization.onSyncRemoved = refreshDialog;
+		var syncListHtml = _.reduce(fileDesc.syncLocations, function(result, syncAttributes) {
+			return result + _.template(dialogManageSynchronizationLocationHTML, {
+				syncAttributes: syncAttributes,
+				syncDesc: syncAttributes.id || syncAttributes.path,
+				syncLocationLink: syncAttributes.provider.getSyncLocationLink && syncAttributes.provider.getSyncLocationLink(syncAttributes)
+			});
+		}, '');
 
-    dialogManageSynchronization.onReady = function() {
-        var modalElt = document.querySelector(".modal-manage-sync");
-        syncListElt = modalElt.querySelector(".sync-list");
-        $msgSyncListElt = $(modalElt.querySelectorAll(".msg-sync-list"));
-        $msgNoSyncElt = $(modalElt.querySelectorAll(".msg-no-sync"));
-    };
+		syncListElt.innerHTML = syncListHtml;
+	};
 
-    return dialogManageSynchronization;
+	dialogManageSynchronization.onFileSelected = function(fileDescParameter) {
+		fileDesc = fileDescParameter;
+		refreshDialog(fileDescParameter);
+	};
+
+	dialogManageSynchronization.onSyncExportSuccess = refreshDialog;
+	dialogManageSynchronization.onSyncRemoved = refreshDialog;
+
+	dialogManageSynchronization.onReady = function() {
+		var modalElt = document.querySelector(".modal-manage-sync");
+		syncListElt = modalElt.querySelector(".sync-list");
+
+		$showAlreadySynchronizedElt = $(document.querySelectorAll(".show-already-synchronized"));
+
+		$(syncListElt).on('click', '.remove-button', function() {
+			var $removeButtonElt = $(this);
+			var syncAttributes = fileDesc.syncLocations[$removeButtonElt.data('syncIndex')];
+			fileDesc.removeSyncLocation(syncAttributes);
+			eventMgr.onSyncRemoved(fileDesc, syncAttributes);
+		});
+	};
+
+	return dialogManageSynchronization;
 
 });

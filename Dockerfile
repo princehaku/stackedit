@@ -1,15 +1,7 @@
-# Dockerfile for StackEdit
+# Pull base image.
+FROM node:0.12-onbuild
 
-FROM shykes/nodejs
+# Node base will default the command to `node server.js`.
 
-RUN apt-get update
-RUN apt-get upgrade
-
-RUN apt-get install -y git-core
-
-RUN git clone https://github.com/benweet/stackedit.git
-
-RUN (cd /stackedit/ && npm install)
+# Expose port.
 EXPOSE 3000
-
-CMD (cd /stackedit/ && node server.js)

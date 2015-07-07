@@ -1,39 +1,38 @@
-var express = require('express');
-var app = express();
+var cluster = require('cluster');
+var http = require('http');
+var https = require('https');
+var app = require('./app');
 
-// Configure ejs engine
-app.set('views', __dirname + '/public');
-app.engine('html', require('ejs').renderFile);
+var count = require('os').cpus().length;
 
-// Force HTTPS on stackedit.io
-app.all('*', function(req, res, next) {
-    if (req.headers.host == 'stackedit.io' && req.headers['x-forwarded-proto'] != 'https') {
-        res.redirect('https://stackedit.io' + req.url);
-    }
-    else {
-        next();
-    }
-});
+if(!process.env.NO_CLUSTER && cluster.isMaster) {
+	for(var i = 0; i < count; i++) {
+		cluster.fork();
+	}
+	cluster.on('exit', function() {
+		console.log('Worker died. Spawning a new process...');
+		cluster.fork();
+	});
+}
+else {
+	var port = process.env.PORT || 3000;
+	if(port == 443) {
+		// OpsWorks configuration
+		var fs = require('fs');
+		var credentials = {
+			key: fs.readFileSync(__dirname + '/../../shared/config/ssl.key', 'utf8'),
+			cert: fs.readFileSync(__dirname + '/../../shared/config/ssl.crt', 'utf8'),
+			ca: fs.readFileSync(__dirname + '/../../shared/config/ssl.ca', 'utf8').split('\n\n')
+		};
+		var httpsServer = https.createServer(credentials, app);
+		httpsServer.listen(port, null, function() {
+			console.log('HTTPS server started: https://localhost');
+		});
+		port = 80;
+	}
+	var httpServer = http.createServer(app);
+	httpServer.listen(port, null, function() {
+		console.log('HTTP server started: http://localhost:' + port);
+	});
+}
 
-// Use gzip compression
-app.use(express.compress());
-
-// Serve static resources
-app.use(express.static(__dirname + '/public'));
-
-// Serve viewer.html in /viewer
-app.get('/viewer', function (req, res) {
-    res.render('viewer.html');
-});
-
-// Error 404
-app.use(function(req, res, next) {
-    res.status(404);
-    res.render('error_404.html');
-});
-
-// Listen on port 3000
-var port = process.env.PORT || 3000;
-app.listen(port, null, function() {
-    console.log('Server started: http://localhost:' + port);
-});
